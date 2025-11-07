@@ -3,35 +3,30 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 
 public class DropboxOAuthAndAPICall {
-
-    // === STEP 1: Fill in your Dropbox app credentials ===
-    private static final String CLIENT_ID = "<YOUR_CLIENT_ID>";
-    private static final String CLIENT_SECRET = "<YOUR_CLIENT_SECRET>";
-    private static final String REDIRECT_URI = "https://oauth.pstmn.io/v1/callback"; // same as app settings
+    private static final String CLIENT_ID = "<app_id>";
+    private static final String CLIENT_SECRET = "<app_secret>";
+    private static final String REDIRECT_URI = "https://localhost/finish";
 
     public static void main(String[] args) {
         try {
-            // === STEP 2: Generate authorization URL ===
+            // Step 1: Print authorization link
             String authUrl = "https://www.dropbox.com/oauth2/authorize"
-                    + "?client_id=" + CLIENT_ID
+                    + "?client_id=" + URLEncoder.encode(CLIENT_ID, "UTF-8")
                     + "&response_type=code"
                     + "&redirect_uri=" + URLEncoder.encode(REDIRECT_URI, "UTF-8")
                     + "&token_access_type=offline"
-                    + "&scope=" + URLEncoder.encode("account_info.read", "UTF-8");
+                    + "&scope=" + URLEncoder.encode("team_info.read team_data.member members.read account_info.read events.read", "UTF-8");
 
-            System.out.println("🔗 STEP 1: Open this URL in your browser and authorize the app:");
+            System.out.println("Open this URL in your browser, approve access, and copy the 'code':");
             System.out.println(authUrl);
-            System.out.println("\nAfter allowing access, copy the 'code' from the URL and paste it below.");
 
-            // === STEP 3: Read the authorization code ===
-            System.out.print("\nEnter the authorization code: ");
             BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
-            String authorizationCode = reader.readLine().trim();
+            System.out.print("\nEnter the authorization code here: ");
+            String code = reader.readLine().trim();
 
-            // === STEP 4: Exchange code for access token ===
-            System.out.println("\n🔑 Exchanging code for access token...");
+            // Step 2: Prepare token exchange request
             String tokenUrl = "https://api.dropboxapi.com/oauth2/token";
-            String data = "code=" + URLEncoder.encode(authorizationCode, "UTF-8")
+            String params = "code=" + URLEncoder.encode(code, "UTF-8")
                     + "&grant_type=authorization_code"
                     + "&client_id=" + URLEncoder.encode(CLIENT_ID, "UTF-8")
                     + "&client_secret=" + URLEncoder.encode(CLIENT_SECRET, "UTF-8")
@@ -44,61 +39,60 @@ public class DropboxOAuthAndAPICall {
             conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
 
             try (OutputStream os = conn.getOutputStream()) {
-                os.write(data.getBytes(StandardCharsets.UTF_8));
+                os.write(params.getBytes(StandardCharsets.UTF_8));
             }
 
-            // Read the token response
-            StringBuilder response = new StringBuilder();
-            try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "utf-8"))) {
-                String line;
-                while ((line = br.readLine()) != null) response.append(line.trim());
+            int status = conn.getResponseCode();
+            String response = readAll(conn);
+            System.out.println("\nHTTP " + status + " Response:\n" + response);
+
+            if (status != 200) {
+                System.out.println("\n❌ Token exchange failed — check if redirect URI matches and code is fresh.");
+                return;
             }
 
-            System.out.println("\n✅ Token Response: " + response);
-            String accessToken = extractToken(response.toString());
+            String token = extractValue(response, "access_token");
+            if (token == null) {
+                System.out.println("❌ Could not extract access_token. Response:\n" + response);
+                return;
+            }
 
-            // === STEP 5: Call Dropbox API ===
-            System.out.println("\n🌐 Calling Dropbox API with access token...");
-            callDropboxAPI(accessToken);
+            // Step 3: Use token to call Dropbox API
+            System.out.println("\n✅ Access token obtained. Calling Dropbox API...\n");
+            callDropboxAPI(token);
 
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    // Extracts access_token value from JSON manually (no external libs)
-    private static String extractToken(String json) {
-        int start = json.indexOf("\"access_token\":");
-        if (start == -1) return null;
-        int firstQuote = json.indexOf('"', start + 16);
-        int secondQuote = json.indexOf('"', firstQuote + 1);
-        return json.substring(firstQuote + 1, secondQuote);
+    private static String readAll(HttpURLConnection conn) throws IOException {
+        InputStream stream = (conn.getResponseCode() >= 400)
+                ? conn.getErrorStream() : conn.getInputStream();
+        if (stream == null) return "";
+        BufferedReader br = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = br.readLine()) != null) sb.append(line);
+        return sb.toString();
     }
 
-    private static void callDropboxAPI(String token) {
-        try {
-            URL apiUrl = new URL("https://api.dropboxapi.com/2/users/get_current_account");
-            HttpURLConnection conn = (HttpURLConnection) apiUrl.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("Authorization", "Bearer " + token);
-            conn.setRequestProperty("Content-Type", "application/json");
-            conn.setDoOutput(true);
+    private static String extractValue(String json, String key) {
+        int i = json.indexOf("\"" + key + "\":");
+        if (i == -1) return null;
+        int start = json.indexOf('"', i + key.length() + 3);
+        int end = json.indexOf('"', start + 1);
+        return json.substring(start + 1, end);
+    }
 
-            try (OutputStream os = conn.getOutputStream()) {
-                os.write("{}".getBytes(StandardCharsets.UTF_8));
-            }
+    private static void callDropboxAPI(String token) throws IOException {
+        URL url = new URL("https://api.dropboxapi.com/2/team/get_info");
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Authorization", "Bearer " + token);
+        conn.setDoOutput(false);
 
-            StringBuilder response = new StringBuilder();
-            try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "utf-8"))) {
-                String line;
-                while ((line = br.readLine()) != null) response.append(line.trim());
-            }
-
-            System.out.println("\n📦 Dropbox API Response:");
-            System.out.println(response.toString());
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        String resp = readAll(conn);
+        System.out.println("Dropbox API Response (" + conn.getResponseCode() + "):\n" + resp);
     }
 }
